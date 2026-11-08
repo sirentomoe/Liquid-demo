@@ -1,0 +1,508 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>液态玻璃登录弹窗 Demo v3</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    /* 玻璃参数默认值 */
+    --glass-blur: 2px;
+    --glass-sat: 1.8;
+    --glass-tint: 0.18;
+    --glass-hl: 0.85;
+    --glass-shadow: 0.15;
+    --glass-radius: 40px;
+    /* 输入框 / 按钮默认值 */
+    --input-alpha: 0.85;
+    --input-border: 0.5;
+    --input-radius: 8px;
+    --btn-radius: 16px;
+  }
+
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #F7F9FF url("bg.png") center / cover no-repeat fixed;
+    overflow-x: hidden;
+  }
+
+  /* ============ 液态玻璃弹窗:分层架构 ============
+     wrapper(圆角容器,可拖动)
+       ├ refraction 层:边缘环内 SVG 折射(mask 挖洞,中心无滤镜=绝对清晰)
+       ├ cover 层:全域低模糊 + 深色暗化
+       ├ reflect 层:柔和内反射
+       ├ sharp 层:1px 锐利双高光
+       └ content:实际表单内容 */
+  .glass-modal {
+    position: relative;
+    width: 434px;
+    border-radius: var(--glass-radius);
+    overflow: hidden;
+    box-shadow:
+      0 6px 20px rgba(27, 56, 96, calc(var(--glass-shadow) * 0.8)),
+      0 24px 64px rgba(27, 56, 96, var(--glass-shadow));
+    cursor: grab;
+  }
+  .glass-modal input { cursor: text; }
+  .glass-modal button, .glass-modal img { cursor: pointer; }
+
+  .glass-refraction {
+    position: absolute; inset: 0; z-index: 0;
+    border-radius: var(--glass-radius);
+    backdrop-filter: url(#glass-distortion) saturate(var(--glass-sat));
+    -webkit-backdrop-filter: blur(0px) saturate(var(--glass-sat));
+  }
+
+  .glass-cover {
+    position: absolute; inset: 0; z-index: 1;
+    border-radius: var(--glass-radius);
+    backdrop-filter: blur(var(--glass-blur));
+    background: rgba(255, 255, 255, var(--glass-tint));
+  }
+  .glass-cover::after {
+    content: ""; position: absolute; inset: 0;
+    border-radius: inherit;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+    opacity: 0.08;
+  }
+
+  .glass-reflect {
+    position: absolute; inset: 1px; z-index: 2;
+    border-radius: calc(var(--glass-radius) - 1px);
+    box-shadow:
+      inset calc(2px + var(--rx, 0px)) calc(2px + var(--ry, 0px)) 6px 2px rgba(255, 255, 255, .2),
+      inset calc(-2px + var(--rx, 0px)) calc(-2px + var(--ry, 0px)) 4px -1px rgba(255, 255, 255, .2);
+    opacity: calc(var(--glass-hl) * 0.6);
+    pointer-events: none;
+  }
+
+  .glass-sharp {
+    position: absolute; inset: 0; z-index: 3;
+    border-radius: var(--glass-radius);
+    box-shadow:
+      inset calc(1px + var(--hx, 0px)) calc(1px + var(--hy, 0px)) 0 0 rgba(255, 255, 255, .55),
+      inset calc(-1px + var(--hx, 0px)) calc(-1px + var(--hy, 0px)) 0 0 rgba(255, 255, 255, .65);
+    opacity: var(--glass-hl);
+    pointer-events: none;
+  }
+
+  .modal-content { position: relative; z-index: 4; padding: 30px 32px 32px; }
+
+  /* 弹窗顶部 */
+  .modal-head { display: flex; justify-content: space-between; margin-bottom: 26px; }
+  .modal-head h2 { font-size: 24px; font-weight: 600; color: #000; line-height: 36px; user-select: none; }
+  .modal-head p  { font-size: 14px; color: #1B3860; margin-top: 10px; user-select: none; }
+  .btn-close {
+    height: 28px; padding: 4px; border-radius: 6px;
+    border: none; background: transparent; cursor: pointer; color: #1B3860;
+    font-size: 14px; line-height: 20px;
+  }
+  .btn-close:hover { background: rgba(27, 56, 96, .08); }
+
+  /* 表单 */
+  .form { display: flex; flex-direction: column; gap: 24px; }
+  .field label { display: block; font-size: 16px; font-weight: 500; color: #1B3860; margin-bottom: 8px; }
+
+  .input-row {
+    display: flex; align-items: center; gap: 8px;
+    height: 40px; padding: 0 12px;
+    background: rgba(255, 255, 255, var(--input-alpha));
+    border: 1px solid rgba(181, 189, 210, var(--input-border));
+    border-radius: var(--input-radius);
+  }
+  .input-row:focus-within {
+    border-color: #0066FF;
+    box-shadow: 0 0 0 3px rgba(0, 102, 255, .12);
+  }
+  .input-row .icon { width: 16px; height: 16px; flex: none; opacity: .55; }
+  .input-row input {
+    flex: 1; min-width: 0; height: 100%;
+    border: none; outline: none; background: transparent;
+    font-size: 16px; color: #1B3860;
+  }
+  .input-row input::placeholder { color: #B5BDD2; }
+
+  .captcha-row { position: relative; }
+  .captcha-row input { padding-right: 96px; }
+  .captcha-img {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    height: 32px; width: 86px; object-fit: cover; border-radius: 4px; cursor: pointer;
+  }
+
+  .btn-submit {
+    margin-top: 16px;
+    width: 100%; height: 56px;
+    border: none; border-radius: var(--btn-radius);
+    background: #0066FF; color: #fff;
+    font-size: 17px; font-weight: 600; letter-spacing: -0.025em;
+    cursor: pointer; transition: filter .15s;
+  }
+  .btn-submit:hover { filter: brightness(1.08); }
+
+  /* 参数控制面板 */
+  .panel {
+    position: fixed; right: 20px; top: 50%; transform: translateY(-50%);
+    width: 230px; padding: 16px;
+    background: rgba(255, 255, 255, .75);
+    backdrop-filter: blur(20px) saturate(1.4);
+    border: 1px solid rgba(255, 255, 255, .6);
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(27, 56, 96, .12);
+    font-size: 12px; color: #1B3860;
+    max-height: 92vh; overflow-y: auto;
+  }
+  .panel h3 { font-size: 14px; margin-bottom: 10px; }
+  .panel label { display: block; margin: 8px 0 2px; }
+  .panel label span { float: right; color: #0066FF; font-variant-numeric: tabular-nums; }
+  .panel input[type=range] { width: 100%; accent-color: #0066FF; }
+  .panel button {
+    margin-top: 10px; width: 100%; padding: 6px;
+    border: 1px solid rgba(181,189,210,.5); border-radius: 8px;
+    background: #fff; color: #1B3860; cursor: pointer;
+  }
+  .panel .tip { margin-top: 8px; color: #B5BDD2; line-height: 1.5; }
+  .panel button.active {
+    background: #0066FF; color: #fff; border-color: #0066FF; font-weight: 600;
+  }
+  /* ===== WebGL 增强模式(方案4) ===== */
+  .glass-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: -1; }
+  body.webgl-mode .glass-refraction { display: none; }
+  /* 测试背景:高对比条纹,用于观察色散/折射 */
+  body.test-bg {
+    background: repeating-conic-gradient(#ff3b30 0% 25%, #ffffff 0% 50%, #007aff 0% 75%, #1a1a1a 0%)
+      center / 160px 160px fixed #F7F9FF;
+  }
+</style>
+</head>
+<body>
+
+<!-- SVG 折射滤镜 -->
+<svg width="0" height="0" style="position:absolute">
+  <!-- RGB 三通道分离折射:边缘产生真实玻璃色散 -->
+  <filter id="glass-distortion" x="-40%" y="-40%" width="180%" height="180%"
+          color-interpolation-filters="sRGB">
+    <feImage id="map-image" result="map" x="0" y="0" />
+    <feColorMatrix in="SourceGraphic" type="matrix"
+      values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="chR"/>
+    <feColorMatrix in="SourceGraphic" type="matrix"
+      values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="chG"/>
+    <feColorMatrix in="SourceGraphic" type="matrix"
+      values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="chB"/>
+    <feDisplacementMap id="dispR" in="chR" in2="map" scale="66"
+      xChannelSelector="R" yChannelSelector="G" result="dR"/>
+    <feDisplacementMap id="dispG" in="chG" in2="map" scale="70"
+      xChannelSelector="R" yChannelSelector="G" result="dG"/>
+    <feDisplacementMap id="dispB" in="chB" in2="map" scale="74"
+      xChannelSelector="R" yChannelSelector="G" result="dB"/>
+    <feBlend in="dR" in2="dG" mode="screen" result="rg"/>
+    <feBlend in="rg" in2="dB" mode="screen"/>
+  </filter>
+</svg>
+
+<!-- 登录弹窗(分层液态玻璃) -->
+<div class="glass-modal" id="modal">
+  <div class="glass-refraction"></div>
+  <div class="glass-cover"></div>
+  <div class="glass-reflect"></div>
+  <div class="glass-sharp"></div>
+
+  <div class="modal-content">
+    <div class="modal-head">
+      <div>
+        <h2>登录</h2>
+        <p>医疗健康新范式-内容由产品提供</p>
+      </div>
+      <button class="btn-close" aria-label="关闭">✕</button>
+    </div>
+
+    <form class="form">
+      <div class="field">
+        <label>用户名</label>
+        <div class="input-row">
+          <svg class="icon" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5" r="3" stroke="#5b6b85" stroke-width="1.3"/><path d="M2.5 14c.8-2.6 3-4 5.5-4s4.7 1.4 5.5 4" stroke="#5b6b85" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <input type="text" placeholder="请输入用户名">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>密码</label>
+        <div class="input-row">
+          <svg class="icon" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="#5b6b85" stroke-width="1.3"/><path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7" stroke="#5b6b85" stroke-width="1.3"/></svg>
+          <input type="password" placeholder="请输入密码">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>图形验证码</label>
+        <div class="input-row captcha-row">
+          <svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M8 2 3 4.5v3c0 3.2 2.1 5.6 5 6.5 2.9-.9 5-3.3 5-6.5v-3L8 2Z" stroke="#5b6b85" stroke-width="1.3"/></svg>
+          <input type="text" placeholder="请输入图形码" maxlength="4">
+          <img class="captcha-img" src="captcha.png" alt="验证码" title="点击刷新" onclick="this.src='captcha.png?t='+Date.now()">
+        </div>
+      </div>
+
+      <button type="button" class="btn-submit">立即登录</button>
+    </form>
+  </div>
+</div>
+
+<!-- 参数控制面板 -->
+<aside class="panel">
+  <h3>液态玻璃参数</h3>
+
+  <label>折射强度 scale <span id="v-refract"></span></label>
+  <input type="range" id="refract" min="0" max="300" value="70" step="1">
+
+  <label>色散强度 <span id="v-chroma"></span></label>
+  <input type="range" id="chroma" min="0" max="0.3" value="0.06" step="0.01">
+
+  <label>折射环宽 <span id="v-edge"></span></label>
+  <input type="range" id="edge" min="2" max="80" value="24" step="1">
+
+  <label>模糊 blur <span id="v-blur"></span></label>
+  <input type="range" id="glass-blur" min="0" max="40" value="2" step="1">
+
+  <label>饱和度 saturate <span id="v-sat"></span></label>
+  <input type="range" id="glass-sat" min="1" max="3" value="1.8" step="0.05">
+
+  <label>白度 tint <span id="v-tint"></span></label>
+  <input type="range" id="glass-tint" min="0" max="0.6" value="0.18" step="0.01">
+
+  <label>高光强度 <span id="v-hl"></span></label>
+  <input type="range" id="glass-hl" min="0" max="1" value="0.85" step="0.01">
+
+  <label>外阴影 <span id="v-shadow"></span></label>
+  <input type="range" id="glass-shadow" min="0" max="1" value="0.15" step="0.01">
+
+  <label>圆角 <span id="v-radius"></span></label>
+  <input type="range" id="glass-radius" min="0" max="60" value="40" step="1">
+
+  <h3 style="margin-top:14px">输入框 / 按钮</h3>
+
+  <label>输入框透明度 <span id="v-ialpha"></span></label>
+  <input type="range" id="input-alpha" min="0" max="1" value="0.85" step="0.01">
+
+  <label>输入框边框 <span id="v-iborder"></span></label>
+  <input type="range" id="input-border" min="0" max="1" value="0.5" step="0.01">
+
+  <label>输入框圆角 <span id="v-iradius"></span></label>
+  <input type="range" id="input-radius" min="0" max="20" value="8" step="1">
+
+  <label>按钮圆角 <span id="v-bradius"></span></label>
+  <input type="range" id="btn-radius" min="0" max="28" value="16" step="1">
+
+  <button id="webgl-toggle">WebGL 折射: 关</button>
+  <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+    <input type="checkbox" id="gl-debug"> 调试环(红色)
+  </label>
+  <button id="test-bg">切换测试背景(看色散)</button>
+  <button id="reset">恢复默认</button>
+  <p class="tip">折射需要 Chrome / Edge。拖动弹窗到背景蓝色区域观察边缘折射。</p>
+</aside>
+
+<script>
+  /* ================= 折射位移贴图 =================
+     只作用于边缘环层(mask 挖洞),中心不经过滤镜 */
+  const displacementCv = document.createElement('canvas');
+  const mapImageEl = document.getElementById('map-image');
+  const modal = document.getElementById('modal');
+  const refractionEl = modal.querySelector('.glass-refraction');
+  let edgeWidth = 24;
+
+  function makeDisplacementMap() {
+    const w = Math.ceil(modal.offsetWidth);
+    const h = Math.ceil(modal.offsetHeight);
+    if (!w || !h) return;
+    displacementCv.width = w; displacementCv.height = h;
+    const ctx = displacementCv.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    const radius = parseFloat(document.getElementById('glass-radius').value);
+    const bw = w / 2 - 1, bh = h / 2 - 1;
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // 圆角矩形 SDF
+        const qx = Math.abs(x - w/2) - (bw - radius);
+        const qy = Math.abs(y - h/2) - (bh - radius);
+        const ax = Math.max(qx, 0), ay = Math.max(qy, 0);
+        const dist = Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - radius;
+
+        // 高斯长尾衰减:边缘 t=1(位移最大),向内平滑收敛到 0,无硬截止
+        const d = -dist; // 元素内部为正
+        const tt = d / (edgeWidth * 1.1);
+        let t = Math.exp(-tt * tt * 3.5);
+
+        let nx = 0, ny = 0;
+        if (ax > 0 || ay > 0) { const l = Math.hypot(ax, ay) || 1; nx = ax / l; ny = ay / l; }
+        else if (qx > qy) { nx = Math.sign(x - w/2); }
+        else { ny = Math.sign(y - h/2); }
+
+        const i = (y * w + x) * 4;
+        img.data[i]     = 128 + nx * t * 127;
+        img.data[i + 1] = 128 + ny * t * 127;
+        img.data[i + 2] = 128;
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    mapImageEl.setAttribute('href', displacementCv.toDataURL());
+    mapImageEl.setAttribute('width', w);
+    mapImageEl.setAttribute('height', h);
+  }
+
+  /* ============ 边缘环 mask:外矩形挖掉内矩形 ============ */
+  function updateMask() {
+    const inset = Math.round(edgeWidth * 1.2);
+    const radius = Math.max(parseFloat(document.getElementById('glass-radius').value) - inset, 0);
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='100%' height='100%'>`
+      + `<rect x='0' y='0' width='100%' height='100%' fill='white'/>`
+      + `<rect x='${inset}' y='${inset}' width='calc(100% - ${inset * 2}px)' height='calc(100% - ${inset * 2}px)' rx='${radius}' ry='${radius}' fill='black'/>`
+      + `</svg>`;
+    refractionEl.style.maskImage = `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
+    refractionEl.style.webkitMaskImage = refractionEl.style.maskImage;
+  }
+
+  function applyRefract() {
+    const base = parseFloat(document.getElementById('refract').value);
+    const ca = parseFloat(document.getElementById('chroma').value);
+    // RGB 各通道折射率略不同:R < G < B,边缘出现彩虹色散
+    document.getElementById('dispR').setAttribute('scale', base * (1 - ca));
+    document.getElementById('dispG').setAttribute('scale', base);
+    document.getElementById('dispB').setAttribute('scale', base * (1 + ca));
+    document.getElementById('v-refract').textContent = base;
+    document.getElementById('v-chroma').textContent = ca;
+  }
+
+  window.addEventListener('resize', () => { makeDisplacementMap(); updateMask(); });
+
+  /* ================= 参数实时调节 ================= */
+  const params = {
+    'glass-blur':    { def: 2,   fmt: v => v + 'px' },
+    'glass-sat':     { def: 1.8, fmt: v => v },
+    'glass-tint':    { def: .18, fmt: v => v },
+    'glass-hl':      { def: .85, fmt: v => v },
+    'glass-shadow':  { def: .15, fmt: v => v },
+    'glass-radius':  { def: 40,  fmt: v => v + 'px' },
+    'input-alpha':   { def: .85, fmt: v => v },
+    'input-border':  { def: .5,  fmt: v => v },
+    'input-radius':  { def: 8,   fmt: v => v + 'px' },
+    'btn-radius':    { def: 16,  fmt: v => v + 'px' },
+  };
+  const labelMap = {
+    'input-alpha': 'v-ialpha', 'input-border': 'v-iborder',
+    'input-radius': 'v-iradius', 'btn-radius': 'v-bradius',
+  };
+  const root = document.documentElement.style;
+
+  function apply(key, value) {
+    const p = params[key];
+    root.setProperty('--' + key, p.fmt(value));
+    document.getElementById(labelMap[key] || ('v-' + key.replace('glass-', ''))).textContent = p.fmt(value);
+  }
+
+  for (const [key, p] of Object.entries(params)) {
+    const el = document.getElementById(key);
+    el.addEventListener('input', () => {
+      apply(key, parseFloat(el.value));
+      if (key === 'glass-radius') { makeDisplacementMap(); updateMask(); }
+    });
+    apply(key, p.def);
+  }
+
+  document.getElementById('refract').addEventListener('input', applyRefract);
+  document.getElementById('edge').addEventListener('input', e => {
+    edgeWidth = parseFloat(e.target.value);
+    document.getElementById('v-edge').textContent = edgeWidth;
+    makeDisplacementMap(); updateMask();
+  });
+
+  document.getElementById('webgl-toggle').addEventListener('click', () => {
+    const on = LiquidGlassWebGL.toggle();
+    const btn = document.getElementById('webgl-toggle');
+    btn.textContent = 'WebGL 折射: ' + (on ? '开' : '关');
+    btn.classList.toggle('active', on);
+  });
+
+  document.getElementById('test-bg').addEventListener('click', () => {
+    const on = document.body.classList.toggle('test-bg');
+    document.getElementById('test-bg').classList.toggle('active', on);
+  });
+
+  document.getElementById('reset').addEventListener('click', () => {
+    document.getElementById('refract').value = 70;
+    document.getElementById('chroma').value = 0.06; applyRefract();
+    document.getElementById('edge').value = 24;
+    edgeWidth = 24; document.getElementById('v-edge').textContent = 24;
+    for (const [key, p] of Object.entries(params)) {
+      document.getElementById(key).value = p.def;
+      apply(key, p.def);
+    }
+    makeDisplacementMap(); updateMask();
+  });
+
+  /* ================= 弹窗拖拽 ================= */
+  let dragging = false, startX = 0, startY = 0, baseX = 0, baseY = 0;
+  let tx = 0, ty = 0;
+
+  modal.addEventListener('pointerdown', e => {
+    if (e.target.closest('input, button, img')) return;
+    dragging = true;
+    modal.setPointerCapture(e.pointerId);
+    startX = e.clientX; startY = e.clientY;
+    baseX = tx; baseY = ty;
+    modal.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+  modal.addEventListener('pointermove', e => {
+    // 动态高光:锐利高光小偏移,柔和反射大偏移,模拟视角变化
+    const r = modal.getBoundingClientRect();
+    const mx = (e.clientX - r.left) / r.width - 0.5;
+    const my = (e.clientY - r.top) / r.height - 0.5;
+    root.setProperty('--hx', (mx * 5).toFixed(2) + 'px');
+    root.setProperty('--hy', (my * 5).toFixed(2) + 'px');
+    root.setProperty('--rx', (mx * 16).toFixed(2) + 'px');
+    root.setProperty('--ry', (my * 16).toFixed(2) + 'px');
+    if (!dragging) return;
+    tx = baseX + e.clientX - startX;
+    ty = baseY + e.clientY - startY;
+    modal.style.transform = `translate(${tx}px, ${ty}px)`;
+  });
+  const endDrag = () => { dragging = false; modal.style.cursor = ''; };
+  modal.addEventListener('pointerleave', () => {
+    root.setProperty('--hx', '0px'); root.setProperty('--hy', '0px');
+    root.setProperty('--rx', '0px'); root.setProperty('--ry', '0px');
+  });
+  modal.addEventListener('pointerup', endDrag);
+  modal.addEventListener('pointercancel', endDrag);
+
+  // 初始化
+  document.getElementById('v-edge').textContent = edgeWidth;
+  applyRefract();
+  makeDisplacementMap();
+  updateMask();
+  setTimeout(() => { makeDisplacementMap(); updateMask(); }, 300);
+</script>
+<script src="bg-datauri.js"></script>
+<script src="liquid-glass-webgl.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
